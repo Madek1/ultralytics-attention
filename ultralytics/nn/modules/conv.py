@@ -721,7 +721,7 @@ class ECAAttention(nn.Module):
         k_size: Adaptive selection of kernel size
     """
 
-    def __init__(self, c1, k_size=3, *, **kwargs):
+    def __init__(self, c1, k_size, *args, **kwargs):
         super(ECAAttention, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.conv = nn.Conv1d(1, 1, kernel_size=k_size, padding=(k_size - 1) // 2, bias=False)
