@@ -25,6 +25,9 @@ from ultralytics.nn.modules import (
     SPPELAN,
     SPPF,
     A2C2f,
+    ECAAttention,
+    ELA,
+    HPCA,
     AConv,
     ADown,
     Bottleneck,
@@ -1393,6 +1396,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             SCDown,
             C2fCIB,
             A2C2f,
+            ECAAttention,
+            ELA,
+            HPCA,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1412,6 +1418,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2fCIB,
             C2PSA,
             A2C2f,
+            ECAAttention,
+            ELA,
+            HPCA,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
