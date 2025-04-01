@@ -721,7 +721,7 @@ class ECAAttention(nn.Module):
         k_size: Adaptive selection of kernel size
     """
 
-    def __init__(self, c1, k_size=3):
+    def __init__(self, c1, k_size=3, **kwargs):
         super(ECAAttention, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.conv = nn.Conv1d(1, 1, kernel_size=k_size, padding=(k_size - 1) // 2, bias=False)
@@ -742,7 +742,7 @@ class ELA(nn.Module):
         channel: Number of channels of the input feature map
         kernel_size: Adaptive selection of kernel size
     """
-    def __init__(self, channel, kernel_size=7):
+    def __init__(self, channel, kernel_size=7, **kwargs):
         super(ELA, self).__init__()
         
         self.conv = nn.Conv1d(channel, channel, kernel_size=kernel_size, padding=kernel_size//2,
@@ -767,7 +767,7 @@ class MLCA(nn.Module):
         kernel_size: Adaptive selection of kernel size
     """
     def __init__(self, in_size, local_size=5, 
-    		gamma=2, b=1, local_weight=0.5):
+    		gamma=2, b=1, local_weight=0.5, **kwargs):
         super(MLCA, self).__init__()
         self.local_size=local_size
         self.gamma = gamma
@@ -840,7 +840,7 @@ class ContextualAttention(nn.Module):
     
 
 class HPCA(nn.Module):
-    def __init__(self, in_channels, grid_size=8, kernel_size=3):
+    def __init__(self, in_channels, grid_size=8, kernel_size=3, **kwargs):
         super(HPCA, self).__init__()
         self.pam = PositionalAttention(in_channels, grid_size)
         self.cam = ContextualAttention(in_channels, kernel_size)
