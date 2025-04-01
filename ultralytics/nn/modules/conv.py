@@ -7,6 +7,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import torch.nn.functional as F
+
 __all__ = (
     "Conv",
     "Conv2",
@@ -714,129 +716,110 @@ class Index(nn.Module):
         return x[self.index]
 
 class ECAAttention(nn.Module):
-    def __init__(self, channels, kernel_size=3):
+    """Efficient Channel Attention module"""
+    def __init__(self, channels, gamma=2, beta=1):
         super(ECAAttention, self).__init__()
-        self.kernel_size = kernel_size
+        # Calculate adaptive kernel size
+        kernel_size = int(abs(math.log(channels, 2) + beta) / gamma)
+        kernel_size = max(kernel_size if kernel_size % 2 else kernel_size + 1, 3)
+        
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv = nn.Conv2d(channels, channels, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        y = self.avg_pool(x)  # Global Average Pooling
-        y = self.conv(y)  # 1D Convolution
-        y = self.sigmoid(y)  # Sigmoid activation
-        return x * y
+        # Feature descriptor on the global spatial information
+        y = self.avg_pool(x)
+        
+        # Two different branches of ECA module
+        y = y.squeeze(-1).transpose(-1, -2)
+        y = self.conv(y).transpose(-1, -2).unsqueeze(-1)
+        
+        # Multi-scale information fusion
+        y = self.sigmoid(y)
+        
+        return x * y.expand_as(x)
 
 class ELA(nn.Module):
-    """Constructs an Efficient Local Attention module.
-    Args:
-        channel: Number of channels of the input feature map
-        kernel_size: Adaptive selection of kernel size
-    """
-    def __init__(self, channel, kernel_size, *args, **kwargs):
+    """External Local Attention module - Fully fixed implementation"""
+    def __init__(self, channels, reduction=16, kernel_size=7):
         super(ELA, self).__init__()
+        # Ensure reduction doesn't make channels too small
+        reduction = min(reduction, channels // 4)  # Ensure at least 4 channels after reduction
         
-        self.conv = nn.Conv1d(channel, channel, kernel_size=kernel_size, padding=kernel_size//2,
-        		      groups=channel, bias=False)
-        self.gn = nn.GroupNorm(16, channel)
-        self.sigmoid = nn.Sigmoid()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        
+        # Fixed channel attention with proper dimensions
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, channels // reduction, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        
+        # Spatial attention with precise size handling
+        self.spatial = nn.Sequential(
+            nn.Conv2d(channels, 1, kernel_size=kernel_size, padding=kernel_size//2, bias=False),
+            nn.BatchNorm2d(1),
+            nn.Sigmoid()
+        )
         
     def forward(self, x):
-        B, C, H, W = x.size()
+        # Channel attention - using convolutional layers instead of Linear
+        y = self.avg_pool(x)  # [B, C, 1, 1]
+        y = self.fc(y)  # [B, C, 1, 1]
         
-        x_h = torch.mean(x, dim=3, keepdim=True).view(B, C, H)
-        x_w = torch.mean(x, dim=2, keepdim=True).view(B, C, W)
-        x_h = self.sigmoid(self.gn(self.conv(x_h))).view(B, C, H, 1)
-        x_w = self.sigmoid(self.gn(self.conv(x_w))).view(B, C, 1, W)
+        # Spatial attention
+        z = self.spatial(x)  # [B, 1, H, W]
         
-        return x * x_h * x_w 
-
-class MLCA(nn.Module):
-    """Constructs an Mixed-Local Channel Attention module.
-    Args:
-        in_size: Number of channels of the input feature map
-        kernel_size: Adaptive selection of kernel size
-    """
-    def __init__(self, in_size, local_size=5, 
-    		gamma=2, b=1, local_weight=0.5):
-        super(MLCA, self).__init__()
-        self.local_size=local_size
-        self.gamma = gamma
-        self.b = b
-        t = int(abs(math.log(in_size, 2) + self.b) / self.gamma)   # eca  gamma=2
-        k = t if t % 2 else t + 1
-
-        self.conv = nn.Conv1d(1, 1, kernel_size=k, padding=(k - 1) // 2, bias=False)
-        self.conv_local = nn.Conv1d(1, 1, kernel_size=k, padding=(k - 1) // 2, bias=False)
-
-        self.local_weight=local_weight
-
-        self.local_arv_pool = nn.AdaptiveAvgPool2d(local_size)
-        self.global_arv_pool=nn.AdaptiveAvgPool2d(1)
-
-    def forward(self, x):
-        local_arv=self.local_arv_pool(x)
-        global_arv=self.global_arv_pool(local_arv)
-
-        b,c,m,n = x.shape
-        b_local, c_local, m_local, n_local = local_arv.shape
-
-        # (b,c,local_size,local_size) -> (b,c,local_size*local_size)-> (b,local_size*local_size,c)-> (b,1,local_size*local_size*c)
-        temp_local= local_arv.view(b, c_local, -1).transpose(-1, -2).reshape(b, 1, -1)
-        temp_global = global_arv.view(b, c, -1).transpose(-1, -2)
-
-        y_local = self.conv_local(temp_local)
-        y_global = self.conv(temp_global)
-
-        # (b,c,local_size,local_size) <- (b,c,local_size*local_size)<-(b,local_size*local_size,c) <- (b,1,local_size*local_size*c)
-        y_local_transpose=y_local.reshape(b, self.local_size * self.local_size,c).transpose(-1,-2).view(b,c, self.local_size , self.local_size)
-        y_global_transpose = y_global.view(b, -1).unsqueeze(-1).unsqueeze(-1)  
-
-        att_local = y_local_transpose.sigmoid()
-        att_global = F.adaptive_avg_pool2d(y_global_transpose.sigmoid(),[self.local_size, self.local_size])
-        att_all = F.adaptive_avg_pool2d(att_global*(1-self.local_weight)+(att_local*self.local_weight), [m, n])
-
-        x = x*att_all
+        # Make sure z has the exact same spatial dimensions as x
+        if z.size(2) != x.size(2) or z.size(3) != x.size(3):
+            z = F.interpolate(z, size=(x.size(2), x.size(3)), mode='bilinear', align_corners=False)
         
-        return x
-    
-
-class PositionalAttention(nn.Module):
-    def __init__(self, in_channels, grid_size=8):
-        super(PositionalAttention, self).__init__()
-        self.grid_size = grid_size
-        self.pos_embedding = nn.Parameter(torch.randn(1, grid_size * grid_size, in_channels))
-        self.attn = nn.MultiheadAttention(embed_dim=in_channels, num_heads=4)
-
-    def forward(self, x):
-        B, C, H, W = x.shape
-        x = x.view(B, C, -1).permute(2, 0, 1)  # (N, B, C)
-        x = x + self.pos_embedding
-        attn_output, _ = self.attn(x, x, x)
-        x = attn_output.permute(1, 2, 0).view(B, C, H, W)
-        return x
-    
-
-class ContextualAttention(nn.Module):
-    def __init__(self, in_channels, kernel_size=3):
-        super(ContextualAttention, self).__init__()
-        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size, padding=kernel_size//2, groups=in_channels, bias=False)
-        self.gn = nn.GroupNorm(16, in_channels)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        context = self.conv(x)
-        context = self.sigmoid(self.gn(context))
-        return x * context
-    
+        # Combine both attentions
+        return x * y * z
 
 class HPCA(nn.Module):
-    def __init__(self, in_channels, grid_size, kernel_size, *args, **kwargs):
+    """Hybrid Pyramid Context Attention module"""
+    def __init__(self, channels, reduction=16, levels=4):
         super(HPCA, self).__init__()
-        self.pam = PositionalAttention(in_channels, grid_size)
-        self.cam = ContextualAttention(in_channels, kernel_size)
-
+        self.levels = levels
+        
+        # Ensure reduction doesn't make channels too small
+        reduction = min(reduction, channels // 4)
+        reduced_channels = channels // reduction
+        
+        # Multiple pooling levels for pyramid context
+        self.pyramid_pools = nn.ModuleList([
+            nn.AdaptiveAvgPool2d(2**i) for i in range(1, levels+1)
+        ])
+        
+        # Context encoders
+        self.context_encoders = nn.ModuleList([
+            nn.Conv2d(channels, reduced_channels, kernel_size=1) for _ in range(levels)
+        ])
+        
+        # Context fusion
+        self.context_fusion = nn.Conv2d(reduced_channels * levels, channels, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+        
     def forward(self, x):
-        x = self.pam(x)
-        x = self.cam(x)
-        return x
+        b, c, h, w = x.size()
+        context_features = []
+        
+        # Extract multi-scale context information
+        for i in range(self.levels):
+            # Pool at different scales
+            pooled = self.pyramid_pools[i](x)
+            # Encode context at each scale
+            encoded = self.context_encoders[i](pooled)
+            # Resize back to original dimensions
+            resized = F.interpolate(encoded, size=(h, w), mode='bilinear', align_corners=False)
+            context_features.append(resized)
+            
+        # Concatenate context features
+        context = torch.cat(context_features, dim=1)
+        # Fuse context features
+        attention_map = self.sigmoid(self.context_fusion(context))
+        
+        return x * attention_map

@@ -1466,6 +1466,15 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             if m is HGBlock:
                 args.insert(4, n)  # number of repeats
                 n = 1
+
+        elif m is ECAAttention:
+            args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)
+            args[2] = int(max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2])
+            
+        # elif m is ELA:
+        #     args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)
+        #     args[2] = int(max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2])
+
         elif m is ResNetLayer:
             c2 = args[1] if args[3] else args[1] * 4
         elif m is torch.nn.BatchNorm2d:
